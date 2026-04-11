@@ -4,7 +4,6 @@ Bot Telegram per segnalazioni stradali in tempo reale.
 Avvio: python main.py
 """
 
-
 import logging
 from telegram.ext import Application
 
@@ -14,7 +13,8 @@ from handlers import (
     start_handler,
     report_handlers,
     status_handler,
-    callback_handler
+    callback_handler,
+    stats_handler
 )
 from handlers.status import status_callback_handler
 
@@ -34,9 +34,7 @@ async def cleanup_job(context) -> None:
 
 
 async def post_init(application: Application) -> None:
-
     """Inizializzazione post-avvio del bot."""
-    # Inizializza il database
     await db.init_db()
     logger.info("Database pronto")
 
@@ -64,6 +62,7 @@ def main() -> None:
     application.add_handler(start_handler)
     application.add_handler(status_handler)
     application.add_handler(status_callback_handler)
+    application.add_handler(stats_handler)
 
     # Handler segnalazione (menu → tipo → zona)
     for handler in report_handlers:
