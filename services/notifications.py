@@ -48,17 +48,18 @@ class NotificationService:
         success_count = 0
 
         for user_id in users:
-            # Salta l'utente che ha creato la segnalazione
             if user_id == exclude_user:
                 continue
 
             try:
-                await self.bot.send_message(
+                sent = await self.bot.send_message(
                     chat_id=user_id,
                     text=message,
                     parse_mode="Markdown",
                     reply_markup=keyboard
                 )
+                # Salva il riferimento al messaggio per poterlo aggiornare dopo
+                await db.save_notification_message(alert_id, sent.chat_id, sent.message_id)
                 success_count += 1
             except TelegramError as e:
                 logger.warning(f"Impossibile notificare utente {user_id}: {e}")
@@ -66,12 +67,11 @@ class NotificationService:
         logger.info(f"Notifica inviata a {success_count}/{len(users)} utenti")
         return success_count
 
-    async def notify_alert_resolved(self, tipo: str, zona: str = "") -> int:
+    async def notify_alert_resolved(self, alert_id: int, tipo: str, zona: str = "") -> int:
         """
-        Notifica tutti gli utenti che una segnalazione è stata risolta.
-        Ritorna il numero di utenti notificati con successo.
+        Aggiorna tutti i messaggi di notifica esistenti mostrando la segnalazione risolta.
+        Ritorna il numero di messaggi aggiornati con successo.
         """
-        users = await db.get_subscribed_users()
         tipo_display = ALERT_TYPES.get(tipo, "⚠️ Sconosciuto")
         zona_display = ALERT_ZONES.get(zona, zona)
 
@@ -83,17 +83,21 @@ class NotificationService:
             "La strada è ora libera!"
         )
 
+        # Recupera tutti i messaggi di notifica inviati per questa segnalazione
+        messaggi = await db.get_notification_messages(alert_id)
         success_count = 0
 
-        for user_id in users:
+        for msg in messaggi:
             try:
-                await self.bot.send_message(
-                    chat_id=user_id,
+                await self.bot.edit_message_text(
+                    chat_id=msg["chat_id"],
+                    message_id=msg["message_id"],
                     text=message,
                     parse_mode="Markdown"
+                    # Nessuna reply_markup: rimuove i pulsanti
                 )
                 success_count += 1
             except TelegramError as e:
-                logger.warning(f"Impossibile notificare utente {user_id}: {e}")
+                logger.warning(f"Impossibile aggiornare messaggio {msg['message_id']} per chat {msg['chat_id']}: {e}")
 
         return success_count

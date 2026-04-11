@@ -73,8 +73,6 @@ def _confirm_keyboard(tipo: str, zona: str) -> InlineKeyboardMarkup:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Gestisce il comando /start."""
     user_id = update.effective_user.id
-    
-    # Registra l'utente
     is_new = await db.register_user(user_id)
 
     welcome = (
@@ -189,8 +187,6 @@ async def handle_report_send(update: Update, context: ContextTypes.DEFAULT_TYPE)
     alert_id = await db.create_alert(tipo, zona, user_id)
 
     if alert_id is None:
-        # Segnalazione già esistente
-        tipo_display = ALERT_TYPES[tipo]
         await query.edit_message_text(
             f"⚠️ Esiste già una segnalazione attiva:\n\n"
             f"{tipo_display}\n{zona_display}\n\n"
@@ -201,17 +197,21 @@ async def handle_report_send(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Vedi stato", callback_data="check_status"),
-            InlineKeyboardButton("🏠 Menu",       callback_data="menu")
+            InlineKeyboardButton("🔴 Ancora presente", callback_data=f"confirm_{alert_id}"),
+            InlineKeyboardButton("🟢 Strada libera",   callback_data=f"resolve_{alert_id}")
         ]
     ])
 
-    await query.edit_message_text(
+    sent = await query.edit_message_text(
         f"✅ **Segnalazione inviata!**\n\n{tipo_display}\n{zona_display}\n\n"
         "Tutti gli utenti sono stati avvisati.",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
+
+    # Salva il messaggio del creatore così può essere aggiornato alla risoluzione
+    if sent:
+        await db.save_notification_message(alert_id, sent.chat.id, sent.message_id)
 
     # Notifica gli altri utenti
     notification_service = NotificationService(context.bot)

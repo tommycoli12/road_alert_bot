@@ -19,7 +19,7 @@ def _build_keyboard(alerts: list[dict]) -> InlineKeyboardMarkup:
         tipo_short = alert["tipo"][:12]
         keyboard_rows.append([
             InlineKeyboardButton(f"🔴 Ancora presente ({tipo_short})", callback_data=f"confirm_{alert_id}"),
-            InlineKeyboardButton("🟢 Strada libera", callback_data=f"resolve_{alert_id}")
+            InlineKeyboardButton("🟢 Strada libera", callback_data=f"resolve_status_{alert_id}")
         ])
 
     keyboard_rows.append([

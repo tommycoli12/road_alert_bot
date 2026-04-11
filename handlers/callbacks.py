@@ -89,18 +89,26 @@ async def handle_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("🟢 Segnalazione risolta!")
 
         tipo_display = ALERT_TYPES.get(tipo, "⚠️")
-
-        await query.edit_message_text(
+        zona_display = alert.get("zona", "")
+        testo_risolto = (
             f"✅ **SEGNALAZIONE RISOLTA**\n\n"
             f"{tipo_display}\n"
-            f"📍 {zona}\n\n"
-            "Grazie per l'aggiornamento!",
-            parse_mode="Markdown"
+            f"📍 {zona_display}\n\n"
+            "La strada è ora libera!"
         )
 
-        # Notifica gli altri utenti
+        # Aggiorna subito il messaggio su cui l'utente ha cliccato
+        try:
+            await query.edit_message_text(
+                testo_risolto,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        # Aggiorna anche tutti gli altri messaggi salvati per questa segnalazione
         notification_service = NotificationService(context.bot)
-        await notification_service.notify_alert_resolved(tipo, zona)
+        await notification_service.notify_alert_resolved(alert_id, tipo, zona)
 
         logger.info(f"Segnalazione {alert_id} ({tipo}) risolta da {update.effective_user.id}")
     else:
@@ -130,9 +138,79 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+async def handle_resolve_from_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Gestisce la risoluzione da un messaggio di stato strada.
+    Dopo la risoluzione aggiorna il messaggio con le segnalazioni rimaste
+    invece di sostituirlo con 'RISOLTA', evitando di nascondere le altre segnalazioni attive.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    query = update.callback_query
+
+    alert_id = int(query.data.replace("resolve_status_", ""))
+
+    alert = await db.get_alert_by_id(alert_id)
+
+    if not alert or alert["stato"] != "ATTIVO":
+        await query.answer("⚠️ Segnalazione già risolta", show_alert=True)
+        # Aggiorna comunque il messaggio di stato con i dati correnti
+        alerts = await db.get_active_alerts()
+        message = AlertService.format_status_message(alerts)
+        keyboard = _build_status_keyboard(alerts)
+        try:
+            await query.edit_message_text(message, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            pass
+        return
+
+    tipo = alert["tipo"]
+    zona = alert.get("zona", "")
+
+    success = await db.resolve_alert(alert_id)
+
+    if success:
+        await query.answer("🟢 Segnalazione risolta!")
+
+        # Aggiorna il messaggio di stato con le segnalazioni rimaste
+        alerts = await db.get_active_alerts()
+        message = AlertService.format_status_message(alerts)
+        keyboard = _build_status_keyboard(alerts)
+        try:
+            await query.edit_message_text(message, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            pass
+
+        # Aggiorna gli altri messaggi di notifica salvati
+        notification_service = NotificationService(context.bot)
+        await notification_service.notify_alert_resolved(alert_id, tipo, zona)
+
+        logger.info(f"Segnalazione {alert_id} ({tipo}) risolta da stato da {update.effective_user.id}")
+    else:
+        await query.answer("❌ Errore nella risoluzione", show_alert=True)
+
+
+def _build_status_keyboard(alerts: list[dict]) -> InlineKeyboardMarkup:
+    """Tastiera per il messaggio di stato (importata qui per evitare import circolare)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    keyboard_rows = []
+    for alert in alerts:
+        alert_id = alert["id"]
+        tipo_short = alert["tipo"][:12]
+        keyboard_rows.append([
+            InlineKeyboardButton(f"🔴 Ancora presente ({tipo_short})", callback_data=f"confirm_{alert_id}"),
+            InlineKeyboardButton("🟢 Strada libera", callback_data=f"resolve_status_{alert_id}")
+        ])
+    keyboard_rows.append([
+        InlineKeyboardButton("🔄 Aggiorna", callback_data="check_status"),
+        InlineKeyboardButton("🏠 Menu",     callback_data="menu")
+    ])
+    return InlineKeyboardMarkup(keyboard_rows)
+
+
 # Handler da esportare
 callback_handler = [
-    CallbackQueryHandler(handle_confirm, pattern=r"^confirm_\d+$"),
-    CallbackQueryHandler(handle_resolve, pattern=r"^resolve_\d+$"),
-    CallbackQueryHandler(handle_menu,    pattern=r"^menu$"),
+    CallbackQueryHandler(handle_confirm,             pattern=r"^confirm_\d+$"),
+    CallbackQueryHandler(handle_resolve,             pattern=r"^resolve_\d+$"),
+    CallbackQueryHandler(handle_resolve_from_status, pattern=r"^resolve_status_\d+$"),
+    CallbackQueryHandler(handle_menu,                pattern=r"^menu$"),
 ]

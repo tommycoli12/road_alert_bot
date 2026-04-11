@@ -2,7 +2,6 @@
 
 import aiosqlite
 import logging
-from datetime import datetime, timedelta
 from typing import Optional
 from config import DATABASE_PATH, ALERT_EXPIRY_MINUTES
 
@@ -40,6 +39,16 @@ async def init_db() -> None:
                 alert_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 PRIMARY KEY (alert_id, user_id)
+            )
+        """)
+
+        # Tabella messaggi di notifica inviati (per aggiornarli alla risoluzione)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS notifiche_messaggi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL
             )
         """)
 
@@ -107,17 +116,13 @@ async def create_alert(tipo: str, zona: str, user_id: int) -> Optional[int]:
             logger.debug(f"Segnalazione {tipo} in zona {zona} già esistente, ID: {existing[0]}")
             return None
 
-        # Crea nuova segnalazione
+        # Crea nuova segnalazione e registra il creatore nella stessa transazione
         cursor = await db.execute(
-            """INSERT INTO segnalazioni (tipo, zona, created_by) 
-               VALUES (?, ?, ?)""",
+            "INSERT INTO segnalazioni (tipo, zona, created_by) VALUES (?, ?, ?)",
             (tipo, zona, user_id)
         )
-        await db.commit()
-
         alert_id = cursor.lastrowid
 
-        # Registra il creatore come primo confermante
         await db.execute(
             "INSERT OR IGNORE INTO conferme_utenti (alert_id, user_id) VALUES (?, ?)",
             (alert_id, user_id)
@@ -139,7 +144,9 @@ async def get_active_alerts() -> list[dict]:
                ORDER BY timestamp DESC"""
         )
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        logger.info(f"get_active_alerts: trovate {len(result)} segnalazioni attive: {[r['id'] for r in result]}")
+        return result
 
 
 async def get_alert_by_id(alert_id: int) -> Optional[dict]:
@@ -250,19 +257,40 @@ async def resolve_alerts_by_type(tipo: str) -> int:
         return count
 
 
+async def save_notification_message(alert_id: int, chat_id: int, message_id: int) -> None:
+    """Salva il riferimento a un messaggio di notifica inviato."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "INSERT INTO notifiche_messaggi (alert_id, chat_id, message_id) VALUES (?, ?, ?)",
+            (alert_id, chat_id, message_id)
+        )
+        await db.commit()
+
+
+async def get_notification_messages(alert_id: int) -> list[dict]:
+    """Restituisce tutti i messaggi di notifica inviati per una segnalazione."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT chat_id, message_id FROM notifiche_messaggi WHERE alert_id = ?",
+            (alert_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def cleanup_expired_alerts() -> int:
     """
     Risolve automaticamente le segnalazioni scadute.
     Ritorna il numero di segnalazioni pulite.
     """
-    expiry_time = datetime.utcnow() - timedelta(minutes=ALERT_EXPIRY_MINUTES)
-
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """UPDATE segnalazioni 
                SET stato = 'RISOLTO'
-               WHERE stato = 'ATTIVO' AND timestamp < ?""",
-            (expiry_time.isoformat(),)
+               WHERE stato = 'ATTIVO'
+               AND (strftime('%s', 'now') - strftime('%s', timestamp)) > ?""",
+            (ALERT_EXPIRY_MINUTES * 60,)
         )
         await db.commit()
 
