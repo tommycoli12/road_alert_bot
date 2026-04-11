@@ -19,7 +19,23 @@ ALERT_TYPES = {
     "incidente": "🚗 Incidente",
     "animale": "🐗 Animale",
     "frana": "⛰️ Frana",
-    "altro": "⚠️ Altro"
+    "posto_blocco": "🚔 Posto di blocco",
+    "macchina_ferma": "🚘 Macchina ferma",
+    "strada_allagata": "🌊 Strada allagata",
+    "lavori": "🦺 Lavori in corso",
+    "ghiaccio": "🧊 Ghiaccio",
+    "nebbia": "🌫️ Nebbia",
+}
+
+# Zone disponibili per le segnalazioni
+ALERT_ZONES = {
+    "fermata_bus_segni": "🚏 Fermata bus Segni",
+    "curva_ceci": "↩️ Curva a Ceci",
+    "meta_strada": "📍 Metà strada",
+    "chiesetta": "⛪ Chiesetta",
+    "piroland": "🎡 Piroland",
+    "cava": "⛏️ Cava",
+    "semaforo_murillo": "🚦 Semaforo Murillo",
 }
 
 # Validazione

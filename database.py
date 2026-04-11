@@ -17,13 +17,14 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS segnalazioni (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tipo TEXT NOT NULL,
+                zona TEXT NOT NULL DEFAULT '',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 stato TEXT DEFAULT 'ATTIVO',
                 conferme INTEGER DEFAULT 1,
                 created_by INTEGER
             )
         """)
-        
+
         # Tabella utenti
         await db.execute("""
             CREATE TABLE IF NOT EXISTS utenti (
@@ -32,7 +33,16 @@ async def init_db() -> None:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # Tabella conferme per utente (evita conferme multiple)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS conferme_utenti (
+                alert_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (alert_id, user_id)
+            )
+        """)
+
         # Indici per performance
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_segnalazioni_stato 
@@ -42,7 +52,7 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_segnalazioni_tipo_stato 
             ON segnalazioni(tipo, stato)
         """)
-        
+
         await db.commit()
         logger.info("Database inizializzato con successo")
 
@@ -58,7 +68,7 @@ async def register_user(user_id: int) -> bool:
             (user_id,)
         )
         exists = await cursor.fetchone()
-        
+
         if not exists:
             await db.execute(
                 "INSERT INTO utenti (user_id) VALUES (?)",
@@ -80,33 +90,41 @@ async def get_subscribed_users() -> list[int]:
         return [row[0] for row in rows]
 
 
-async def create_alert(tipo: str, user_id: int) -> Optional[int]:
+async def create_alert(tipo: str, zona: str, user_id: int) -> Optional[int]:
     """
     Crea una nuova segnalazione.
-    Ritorna l'ID della segnalazione o None se esiste già una attiva dello stesso tipo.
+    Ritorna l'ID della segnalazione o None se esiste già una attiva dello stesso tipo e zona.
     """
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Verifica duplicati
+        # Verifica duplicati (stesso tipo e stessa zona)
         cursor = await db.execute(
-            "SELECT id FROM segnalazioni WHERE tipo = ? AND stato = 'ATTIVO'",
-            (tipo,)
+            "SELECT id FROM segnalazioni WHERE tipo = ? AND zona = ? AND stato = 'ATTIVO'",
+            (tipo, zona)
         )
         existing = await cursor.fetchone()
-        
+
         if existing:
-            logger.debug(f"Segnalazione {tipo} già esistente, ID: {existing[0]}")
+            logger.debug(f"Segnalazione {tipo} in zona {zona} già esistente, ID: {existing[0]}")
             return None
-        
+
         # Crea nuova segnalazione
         cursor = await db.execute(
-            """INSERT INTO segnalazioni (tipo, created_by) 
-               VALUES (?, ?)""",
-            (tipo, user_id)
+            """INSERT INTO segnalazioni (tipo, zona, created_by) 
+               VALUES (?, ?, ?)""",
+            (tipo, zona, user_id)
         )
         await db.commit()
-        
+
         alert_id = cursor.lastrowid
-        logger.info(f"Nuova segnalazione creata: {tipo}, ID: {alert_id}")
+
+        # Registra il creatore come primo confermante
+        await db.execute(
+            "INSERT OR IGNORE INTO conferme_utenti (alert_id, user_id) VALUES (?, ?)",
+            (alert_id, user_id)
+        )
+        await db.commit()
+
+        logger.info(f"Nuova segnalazione creata: {tipo} in {zona}, ID: {alert_id}")
         return alert_id
 
 
@@ -115,7 +133,7 @@ async def get_active_alerts() -> list[dict]:
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            """SELECT id, tipo, timestamp, conferme 
+            """SELECT id, tipo, zona, timestamp, conferme 
                FROM segnalazioni 
                WHERE stato = 'ATTIVO'
                ORDER BY timestamp DESC"""
@@ -136,24 +154,60 @@ async def get_alert_by_id(alert_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
-async def confirm_alert(alert_id: int) -> bool:
-    """
-    Incrementa le conferme e aggiorna il timestamp.
-    Ritorna True se l'operazione ha avuto successo.
-    """
+async def has_user_confirmed(alert_id: int, user_id: int) -> bool:
+    """Verifica se un utente ha già confermato una segnalazione."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
+            "SELECT 1 FROM conferme_utenti WHERE alert_id = ? AND user_id = ?",
+            (alert_id, user_id)
+        )
+        return await cursor.fetchone() is not None
+
+
+async def confirm_alert(alert_id: int, user_id: int) -> str:
+    """
+    Incrementa le conferme e aggiorna il timestamp.
+    Ritorna:
+      'ok'       — conferma registrata con successo
+      'duplicate' — utente aveva già confermato
+      'not_found' — segnalazione non trovata o non attiva
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Controlla se l'utente ha già confermato
+        cursor = await db.execute(
+            "SELECT 1 FROM conferme_utenti WHERE alert_id = ? AND user_id = ?",
+            (alert_id, user_id)
+        )
+        already = await cursor.fetchone()
+        if already:
+            return 'duplicate'
+
+        # Controlla che la segnalazione sia attiva
+        cursor = await db.execute(
+            "SELECT id FROM segnalazioni WHERE id = ? AND stato = 'ATTIVO'",
+            (alert_id,)
+        )
+        exists = await cursor.fetchone()
+        if not exists:
+            return 'not_found'
+
+        # Registra la conferma dell'utente
+        await db.execute(
+            "INSERT INTO conferme_utenti (alert_id, user_id) VALUES (?, ?)",
+            (alert_id, user_id)
+        )
+
+        # Aggiorna il conteggio e il timestamp
+        await db.execute(
             """UPDATE segnalazioni 
                SET conferme = conferme + 1, timestamp = CURRENT_TIMESTAMP
-               WHERE id = ? AND stato = 'ATTIVO'""",
+               WHERE id = ?""",
             (alert_id,)
         )
         await db.commit()
-        
-        success = cursor.rowcount > 0
-        if success:
-            logger.info(f"Segnalazione {alert_id} confermata")
-        return success
+
+        logger.info(f"Segnalazione {alert_id} confermata da utente {user_id}")
+        return 'ok'
 
 
 async def resolve_alert(alert_id: int) -> bool:
@@ -169,7 +223,7 @@ async def resolve_alert(alert_id: int) -> bool:
             (alert_id,)
         )
         await db.commit()
-        
+
         success = cursor.rowcount > 0
         if success:
             logger.info(f"Segnalazione {alert_id} risolta")
@@ -189,7 +243,7 @@ async def resolve_alerts_by_type(tipo: str) -> int:
             (tipo,)
         )
         await db.commit()
-        
+
         count = cursor.rowcount
         if count > 0:
             logger.info(f"Risolte {count} segnalazioni di tipo {tipo}")
@@ -202,7 +256,7 @@ async def cleanup_expired_alerts() -> int:
     Ritorna il numero di segnalazioni pulite.
     """
     expiry_time = datetime.utcnow() - timedelta(minutes=ALERT_EXPIRY_MINUTES)
-    
+
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """UPDATE segnalazioni 
@@ -211,7 +265,7 @@ async def cleanup_expired_alerts() -> int:
             (expiry_time.isoformat(),)
         )
         await db.commit()
-        
+
         count = cursor.rowcount
         if count > 0:
             logger.info(f"Pulizia automatica: {count} segnalazioni scadute")

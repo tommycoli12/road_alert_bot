@@ -4,7 +4,7 @@ Bot Telegram per segnalazioni stradali in tempo reale.
 Avvio: python main.py
 """
 
-import asyncio
+
 import logging
 from telegram.ext import Application
 
@@ -12,7 +12,7 @@ from config import BOT_TOKEN, ALERT_EXPIRY_MINUTES
 import database as db
 from handlers import (
     start_handler,
-    report_handler,
+    report_handlers,
     status_handler,
     callback_handler
 )
@@ -34,12 +34,12 @@ async def cleanup_job(context) -> None:
 
 
 async def post_init(application: Application) -> None:
+
     """Inizializzazione post-avvio del bot."""
     # Inizializza il database
     await db.init_db()
     logger.info("Database pronto")
-    
-    # Schedula il job di pulizia ogni 5 minuti
+
     job_queue = application.job_queue
     job_queue.run_repeating(
         cleanup_job,
@@ -52,26 +52,27 @@ async def post_init(application: Application) -> None:
 def main() -> None:
     """Avvia il bot."""
     logger.info("Avvio bot segnalazioni strada...")
-    
-    # Crea l'applicazione
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
         .build()
     )
-    
-    # Registra gli handler
+
+    # Handler comandi
     application.add_handler(start_handler)
-    application.add_handler(report_handler)
     application.add_handler(status_handler)
     application.add_handler(status_callback_handler)
-    
-    # Registra i callback handler (lista)
+
+    # Handler segnalazione (menu → tipo → zona)
+    for handler in report_handlers:
+        application.add_handler(handler)
+
+    # Handler callback (conferma / risolvi / menu)
     for handler in callback_handler:
         application.add_handler(handler)
-    
-    # Avvia il bot
+
     logger.info("Bot in esecuzione. Premi Ctrl+C per fermare.")
     application.run_polling(allowed_updates=["message", "callback_query"])
 
